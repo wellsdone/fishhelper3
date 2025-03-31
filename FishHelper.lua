@@ -4,7 +4,7 @@ function main()
     while not isSampAvailable() do wait(100) end
     
     -- Инициализация
-    local currentVersion = "1.2"
+    local currentVersion = "1.7"
     local updateUrl = "https://raw.githubusercontent.com/wellsdone/fishhelper3/main/FishHelper.lua"
     local versionCheckUrl = "https://raw.githubusercontent.com/wellsdone/fishhelper3/main/version.txt"
     
