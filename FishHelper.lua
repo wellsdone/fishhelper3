@@ -3,143 +3,414 @@ function main()
     if not isSampfuncsLoaded() or not isSampLoaded() then return end
     while not isSampAvailable() do wait(100) end
     
-    -- Инициализация
-    local currentVersion = "1.0"
-    local updateUrl = "https://raw.githubusercontent.com/wellsdone/fishhelper2/main/FishHelper.lua"
-    local versionCheckUrl = "https://raw.githubusercontent.com/wellsdone/fishhelper2/main/version.txt"
+    -- РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ
+    local currentVersion = "1.2"
+    local updateUrl = "https://raw.githubusercontent.com/wellsdone/fishhelper3/main/FishHelper.lua"
+    local versionCheckUrl = "https://raw.githubusercontent.com/wellsdone/fishhelper3/main/version.txt"
     
     sampAddChatMessage("========== {FFA500}FishHelper v"..currentVersion.." {FFFFFF}===========", -1)
-    sampAddChatMessage("{FFFFFF}Введите {FFA500}/fhelper {FFFFFF}для списка команд", -1)
+    sampAddChatMessage("{FFFFFF}Р’РІРµРґРёС‚Рµ {FFA500}/fhelper {FFFFFF}РґР»СЏ СЃРїРёСЃРєР° РєРѕРјР°РЅРґ", -1)
     sampAddChatMessage("===============================", -1)
+    
+    -- РќР°СЃС‚СЂРѕР№РєРё
+    local normal_speed = 150
+    local fine_speed = 300
+    local press_duration = 10
+    local precision = 0.3
+    local safe_margin = 0.8
+    local AutoEatActive = false
+    local caughtItems = {}
+    local lastCatch = nil
+    local alignment_stage = 0
+    local skipNextFish = false
 
-    -- Альтернативная функция для проверки обновлений через samp
-    local function checkUpdatesWithSamp()
-        -- Создаем временный файл для записи версии
-        local versionFile = os.getenv('TEMP')..'\\fishhelper_version.txt'
-        local updateFile = os.getenv('TEMP')..'\\fishhelper_update.lua'
-        
-        -- Функция для загрузки файла через samp
-        local function downloadFile(url, filePath)
-            sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Загружаем обновления...", -1)
-            os.remove(filePath) -- Удаляем старый файл если есть
-            
-            -- Используем curl через командную строку
-            local command = string.format('curl -s -o "%s" "%s"', filePath, url)
-            local result = os.execute(command)
-            
-            if result then
-                local file = io.open(filePath, 'r')
-                if file then
-                    local content = file:read('*a')
-                    file:close()
-                    return true, content
-                end
-            end
-            return false, "Ошибка загрузки"
-        end
+    -- РџРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РѕС‚СЃР»РµР¶РёРІР°РЅРёСЏ РїСЂРѕРґР°Р¶
+    local totalSales = 0
+    local lastSaleTime = 0
+    local saleCheckTimer = os.clock()
 
-        -- Проверяем версию
-        local success, response = downloadFile(versionCheckUrl, versionFile)
-        if not success then
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}"..response, -1)
-            return
+    -- РќР°Р№РґРµРЅРЅС‹Рµ С‚РµРєСЃС‚РґСЂР°РІС‹
+    local found = {
+        trigger = nil,
+        static = nil,
+        moving = nil,
+        trigger_last_state = nil
+    }
+
+    -- WinAPI
+    local ffi = require 'ffi'
+    ffi.cdef[[
+        void keybd_event(int bVk, int bScan, int dwFlags, int dwExtraInfo);
+    ]]
+    local VK_SHIFT = 0x10
+    local VK_RETURN = 0x0D
+
+    -- Р¤СѓРЅРєС†РёРё РЅР°Р¶Р°С‚РёР№
+    local function pressShift()
+        ffi.C.keybd_event(VK_SHIFT, 0, 0, 0)
+        wait(press_duration)
+        ffi.C.keybd_event(VK_SHIFT, 0, 2, 0)
+    end
+
+    local function pressEnter()
+        ffi.C.keybd_event(VK_RETURN, 0, 0, 0)
+        wait(press_duration) 
+        ffi.C.keybd_event(VK_RETURN, 0, 2, 0)
+    end
+
+    -- Р¤РѕСЂРјР°С‚РёСЂРѕРІР°РЅРёРµ СЃСѓРјРјС‹ СЃ СЂР°Р·РґРµР»РёС‚РµР»СЏРјРё
+    local function formatMoney(amount)
+        local formatted = tostring(amount)
+        local k = string.len(formatted) - 3
+        while k > 0 do
+            formatted = string.sub(formatted, 1, k) .. "." .. string.sub(formatted, k+1)
+            k = k - 3
         end
-        
-        local latestVersion = response:match("[%d.]+")
-        if not latestVersion then
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}Неверный формат версии", -1)
-            return
-        end
-        
-        if latestVersion == currentVersion then
-            sampAddChatMessage("{FFA500}FishHelper: {00FF00}У вас актуальная версия "..currentVersion, -1)
-        elseif latestVersion > currentVersion then
-            sampAddChatMessage("{FFA500}FishHelper: {FFFF00}Доступна новая версия "..latestVersion, -1)
-            sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Текущая версия: "..currentVersion, -1)
-            sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Введите {FFFF00}/fupdate {FFFFFF}для обновления", -1)
+        return formatted .. "$"
+    end
+
+    -- Р’С‹РІРѕРґ РёРЅС„РѕСЂРјР°С†РёРё Рѕ РїСЂРѕРґР°Р¶Р°С…
+    local function showSalesInfo()
+        if totalSales > 0 then
+            sampAddChatMessage("========== {FFA500}FishHelper {FFFFFF}==========", -1)
+            sampAddChatMessage("{FFFFFF}Р”РѕС…РѕРґ СЃ РїСЂРѕРґР°Р¶: {4fbd0f}"..formatMoney(totalSales), -1)
+            sampAddChatMessage("==============================", -1)
+            totalSales = 0
         end
     end
 
-    -- Альтернативная функция обновления
-    local function updateWithSamp()
-        local updateFile = os.getenv('TEMP')..'\\fishhelper_update.lua'
+    -- РЈР»СѓС‡С€РµРЅРЅР°СЏ СЃРёСЃС‚РµРјР° РѕР±РЅРѕРІР»РµРЅРёР№ С‡РµСЂРµР· PowerShell
+    local function checkUpdates()
+        lua_thread.create(function()
+            sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РџСЂРѕРІРµСЂСЏРµРј РѕР±РЅРѕРІР»РµРЅРёСЏ...", -1)
+            
+            local versionFile = os.getenv('TEMP')..'\\fh_version.txt'
+            local command = string.format(
+                'powershell -command "(New-Object System.Net.WebClient).DownloadFile(\'%s\', \'%s\')"',
+                versionCheckUrl,
+                versionFile
+            )
+            
+            local result = os.execute(command)
+            if not result then
+                sampAddChatMessage("{FFA500}FishHelper: {FF0000}РћС€РёР±РєР° РїСЂРѕРІРµСЂРєРё РѕР±РЅРѕРІР»РµРЅРёР№", -1)
+                return
+            end
+            
+            local file = io.open(versionFile, 'r')
+            if not file then
+                sampAddChatMessage("{FFA500}FishHelper: {FF0000}РћС€РёР±РєР° С‡С‚РµРЅРёСЏ РІРµСЂСЃРёРё", -1)
+                return
+            end
+            
+            local latestVersion = file:read('*a'):match("[%d.]+")
+            file:close()
+            os.remove(versionFile)
+            
+            if not latestVersion then
+                sampAddChatMessage("{FFA500}FishHelper: {FF0000}РќРµРІРµСЂРЅС‹Р№ С„РѕСЂРјР°С‚ РІРµСЂСЃРёРё", -1)
+                return
+            end
+            
+            if latestVersion == currentVersion then
+                sampAddChatMessage("{FFA500}FishHelper: {00FF00}РЈ РІР°СЃ Р°РєС‚СѓР°Р»СЊРЅР°СЏ РІРµСЂСЃРёСЏ "..currentVersion, -1)
+            elseif latestVersion > currentVersion then
+                sampAddChatMessage("{FFA500}FishHelper: {FFFF00}Р”РѕСЃС‚СѓРїРЅР° РЅРѕРІР°СЏ РІРµСЂСЃРёСЏ "..latestVersion, -1)
+                sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РўРµРєСѓС‰Р°СЏ РІРµСЂСЃРёСЏ: "..currentVersion, -1)
+                sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Р’РІРµРґРёС‚Рµ {FFFF00}/fupdate {FFFFFF}РґР»СЏ РѕР±РЅРѕРІР»РµРЅРёСЏ", -1)
+            end
+        end)
+    end
+
+    local function updateScript()
+        sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РќР°С‡РёРЅР°РµРј РѕР±РЅРѕРІР»РµРЅРёРµ...", -1)
         
-        -- Загружаем обновление
-        sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Загружаем обновление...", -1)
-        local command = string.format('curl -s -o "%s" "%s"', updateFile, updateUrl)
+        local updateFile = os.getenv('TEMP')..'\\fh_update.lua'
+        local command = string.format(
+            'powershell -command "(New-Object System.Net.WebClient).DownloadFile(\'%s\', \'%s\')"',
+            updateUrl,
+            updateFile
+        )
+        
         local result = os.execute(command)
-        
         if not result then
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}Ошибка загрузки обновления", -1)
+            sampAddChatMessage("{FFA500}FishHelper: {FF0000}РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РѕР±РЅРѕРІР»РµРЅРёСЏ", -1)
             return
         end
         
-        -- Проверяем что файл загружен
         local file = io.open(updateFile, 'r')
         if not file then
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}Ошибка чтения обновления", -1)
+            sampAddChatMessage("{FFA500}FishHelper: {FF0000}РћС€РёР±РєР° С‡С‚РµРЅРёСЏ РѕР±РЅРѕРІР»РµРЅРёСЏ", -1)
             return
         end
         
         local content = file:read('*a')
         file:close()
         
-        if #content < 1000 then -- Минимальный размер скрипта
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}Неверный файл обновления", -1)
+        if #content < 1000 then
+            sampAddChatMessage("{FFA500}FishHelper: {FF0000}РќРµРІРµСЂРЅС‹Р№ С„Р°Р№Р» РѕР±РЅРѕРІР»РµРЅРёСЏ", -1)
             return
         end
         
-        -- Создаем резервную копию
+        -- РЎРѕР·РґР°РµРј СЂРµР·РµСЂРІРЅСѓСЋ РєРѕРїРёСЋ
         local backupPath = thisScript().path..".bak"
         if os.rename(thisScript().path, backupPath) then
-            sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Создана резервная копия: "..backupPath, -1)
+            sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РЎРѕР·РґР°РЅР° СЂРµР·РµСЂРІРЅР°СЏ РєРѕРїРёСЏ: "..backupPath, -1)
         else
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}Не удалось создать резервную копию", -1)
+            sampAddChatMessage("{FFA500}FishHelper: {FF0000}РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ СЂРµР·РµСЂРІРЅСѓСЋ РєРѕРїРёСЋ", -1)
         end
         
-        -- Записываем обновление
+        -- Р—Р°РїРёСЃС‹РІР°РµРј РѕР±РЅРѕРІР»РµРЅРёРµ
         local scriptFile, err = io.open(thisScript().path, "w")
         if not scriptFile then
-            sampAddChatMessage("{FFA500}FishHelper: {FF0000}Ошибка записи файла: "..tostring(err), -1)
+            sampAddChatMessage("{FFA500}FishHelper: {FF0000}РћС€РёР±РєР° Р·Р°РїРёСЃРё С„Р°Р№Р»Р°: "..tostring(err), -1)
             return
         end
         
         scriptFile:write(content)
         scriptFile:close()
+        os.remove(updateFile)
         
-        sampAddChatMessage("{FFA500}FishHelper: {00FF00}Обновление успешно завершено!", -1)
-        sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}Перезапустите скрипт командой {FFFF00}/reload", -1)
+        sampAddChatMessage("{FFA500}FishHelper: {00FF00}РћР±РЅРѕРІР»РµРЅРёРµ СѓСЃРїРµС€РЅРѕ Р·Р°РІРµСЂС€РµРЅРѕ!", -1)
+        sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РџРµСЂРµР·Р°РїСѓСЃС‚РёС‚Рµ СЃРєСЂРёРїС‚ РєРѕРјР°РЅРґРѕР№ {FFFF00}/reload", -1)
     end
 
-    -- Остальной код скрипта (настройки, функции рыбалки и т.д.) остается без изменений
-    -- ...
+    -- РћР±СЂР°Р±РѕС‚РєР° СЂС‹Р±Р°Р»РєРё
+    local function processFishAction()
+        if skipNextFish then
+            skipNextFish = false
+            return
+        end
+        
+        local random_delay = math.random(1000, 5000)
+        wait(random_delay)
+        
+        sampSendChat("/fish")
+        wait(300)
+        pressEnter()
+        wait(300)
+        pressEnter()
+    end
 
-    -- Обновленные команды
+    -- РџРѕРёСЃРє С‚РµРєСЃС‚РґСЂР°РІРѕРІ
+    local function findTextdraws()
+        if found.static and not sampTextdrawIsExists(found.static) then
+            found.static = nil
+        end
+        if found.moving and not sampTextdrawIsExists(found.moving) then
+            found.moving = nil
+        end
+        if found.trigger and not sampTextdrawIsExists(found.trigger) then
+            found.trigger = nil
+        end
+        
+        for id = 2225, 2235 do
+            if sampTextdrawIsExists(id) then
+                local x, y = sampTextdrawGetPos(id)
+                
+                if not found.trigger and math.abs(x - 319.250) < 0.001 and math.abs(y - 420.843) < 0.001 then
+                    found.trigger = id
+                end
+                
+                if not found.static and math.abs(x - 192.3) < 0.001 then
+                    found.static = id
+                end
+                
+                if not found.moving and math.abs(x - 186.950) < 0.001 and y >= 395 and y <= 405 then
+                    found.moving = id
+                end
+            end
+        end
+        
+        return found.trigger, found.static, found.moving
+    end
+
+    -- РљРѕРјР°РЅРґС‹
+    sampRegisterChatCommand("feat", function()
+        AutoEatActive = not AutoEatActive
+        local status = AutoEatActive and "{00FF00}РІРєР»СЋС‡РµРЅРѕ" or "{FF0000}РІС‹РєР»СЋС‡РµРЅРѕ"
+        sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РџРѕРїРѕР»РЅРµРЅРёРµ СЃС‹С‚РѕСЃС‚Рё "..status, -1)
+    end)
+
+    sampRegisterChatCommand("fhelper", function()
+        local helpText = [[
+{FFA500}FishHelper v]]..currentVersion..[[ {FFFFFF}- РќР°СЃС‚СЂРѕР№РєРё СЂС‹Р±Р°Р»РєРё
+
+{FFA500}/feat {FFFFFF}- Р’РєР»/Р’С‹РєР» РїРѕРїРѕР»РЅРµРЅРёРµ СЃС‹С‚РѕСЃС‚Рё (]]..(AutoEatActive and "{00FF00}Р’РєР»" or "{FF0000}Р’С‹РєР»")..[[{FFFFFF})
+{FFA500}/flist {FFFFFF}- РЎС‚Р°С‚РёСЃС‚РёРєР° СѓР»РѕРІР°
+{FFA500}/fstop {FFFFFF}- РћСЃС‚Р°РЅРѕРІРёС‚СЊ СЃРєСЂРёРїС‚
+{FFA500}/fupdate {FFFFFF}- РћР±РЅРѕРІРёС‚СЊ СЃРєСЂРёРїС‚
+{FFA500}/fver {FFFFFF}- РџСЂРѕРІРµСЂРёС‚СЊ РѕР±РЅРѕРІР»РµРЅРёСЏ
+
+{FFFFFF}GitHub: {FFA500}github.com/wellsdone/fishhelper3
+]]
+        sampShowDialog(1001, "{FFA500}FishHelper v"..currentVersion, helpText, "Р—Р°РєСЂС‹С‚СЊ", "", 0)
+    end)
+
+    sampRegisterChatCommand("flist", function()
+        if not next(caughtItems) then
+            sampShowDialog(1000, "{FFA500}РЎС‚Р°С‚РёСЃС‚РёРєР° СѓР»РѕРІР°", "{FFFFFF}РРЅС„РѕСЂРјР°С†РёСЏ РѕР± СѓР»РѕРІРµ РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚. РќР°С‡РЅРёС‚Рµ СЂС‹Р±Р°Р»РєСѓ.", "Р—Р°РєСЂС‹С‚СЊ", "", 0)
+            return
+        end
+        
+        local dialogText = ""
+        local itemsList = {}
+        
+        for itemName, data in pairs(caughtItems) do
+            if data.count > 0 then 
+                table.insert(itemsList, {
+                    name = itemName,
+                    count = data.count,
+                    isFish = data.isFish
+                }) 
+            end
+        end
+        
+        table.sort(itemsList, function(a, b) return a.name < b.name end)
+        
+        for _, item in ipairs(itemsList) do
+            local isKey = (item.name == "РљР»СЋС‡ РѕС‚ РєРµР№СЃР° СЂС‹Р±Р°РєР°")
+            local unit = item.isFish and "РєРі" or "С€С‚"
+            dialogText = dialogText .. string.format(
+                "%s%s {FFFFFF}- %.2f %s\n",
+                isKey and "{FF0000}" or "{FFA500}",
+                item.name,
+                item.count,
+                unit
+            )
+        end
+        
+        sampShowDialog(1000, "{FFA500}РЎС‚Р°С‚РёСЃС‚РёРєР° СѓР»РѕРІР°", dialogText, "Р—Р°РєСЂС‹С‚СЊ", "", 0)
+    end)
+
+    sampRegisterChatCommand("fstop", function()
+        skipNextFish = true
+        sampAddChatMessage("{FFA500}FishHelper: {FFFFFF}РЎРєСЂРёРїС‚ Р·Р°РІРµСЂС€РёС‚ СЂР°Р±РѕС‚Сѓ РїРѕСЃР»Рµ СѓР»РѕРІР°", -1)
+    end)
+
     sampRegisterChatCommand("fupdate", function()
-        updateWithSamp()
+        updateScript()
     end)
 
     sampRegisterChatCommand("fver", function()
-        checkUpdatesWithSamp()
+        checkUpdates()
     end)
 
-    -- Первая проверка обновлений при старте
+    -- РћР±СЂР°Р±РѕС‚С‡РёРє СЃРѕРѕР±С‰РµРЅРёР№
+    local sampev = require 'lib.samp.events'
+    function sampev.onServerMessage(color, text)
+        -- РћР±СЂР°Р±РѕС‚РєР° РїСЂРѕРґР°Р¶
+        local saleAmount = text:match('Р’С‹ СѓСЃРїРµС€РЅРѕ РїСЂРѕРґР°Р»Рё {.-}.-Р·Р° {.-}(%d+)%$')
+        if saleAmount then
+            local amount = tonumber(saleAmount)
+            if amount then
+                totalSales = totalSales + amount
+                lastSaleTime = os.clock()
+            end
+        end
+        
+        -- РћСЃС‚Р°Р»СЊРЅР°СЏ РѕР±СЂР°Р±РѕС‚РєР° СЃРѕРѕР±С‰РµРЅРёР№
+        if text:find("Р’С‹ РїСЂРѕРіРѕР»РѕРґР°Р»РёСЃСЊ") and AutoEatActive then
+            sampSendChat("/eat 4")
+        elseif text:find("Р’С‹ РїРѕР№РјР°Р»Рё") then
+            local item = text:match('"([^"]+)"') or "РЅРµРёР·РІРµСЃС‚РЅС‹Р№ РїСЂРµРґРјРµС‚"
+            local count = 1
+            local isFish = false
+            
+            local quantity = text:match("(%d+) С€С‚%.")
+            if quantity then
+                count = tonumber(quantity) or 1
+                isFish = false
+            else
+                local weightStr = text:match("(%d+%.?%d*) Рі%.")
+                if weightStr then
+                    local weight = tonumber(weightStr) or 0
+                    count = weight / 1000
+                    isFish = true
+                end
+            end
+            
+            lastCatch = item
+            if not caughtItems[item] then
+                caughtItems[item] = {
+                    count = 0,
+                    isFish = isFish
+                }
+            end
+            caughtItems[item].count = caughtItems[item].count + count
+            
+            lua_thread.create(processFishAction)
+        elseif text:find("РџСЂРµРґРјРµС‚ РЅРµ Р±С‹Р» РґРѕР±Р°РІР»РµРЅ РІ РёРЅРІРµРЅС‚Р°СЂСЊ") and lastCatch then
+            if caughtItems[lastCatch] then
+                caughtItems[lastCatch].count = caughtItems[lastCatch].count - (caughtItems[lastCatch].isFish and 0.001 or 1)
+                if caughtItems[lastCatch].count <= 0 then
+                    caughtItems[lastCatch] = nil
+                end
+            end
+            lastCatch = nil
+        end
+    end
+
+    -- РџРµСЂРІР°СЏ РїСЂРѕРІРµСЂРєР° РѕР±РЅРѕРІР»РµРЅРёР№ РїСЂРё СЃС‚Р°СЂС‚Рµ
     lua_thread.create(function()
-        wait(5000) -- Даем время для загрузки
-        checkUpdatesWithSamp()
+        wait(5000) -- Р”Р°РµРј РІСЂРµРјСЏ РґР»СЏ Р·Р°РіСЂСѓР·РєРё
+        checkUpdates()
     end)
 
-    -- Главный цикл с проверкой обновлений каждый час
+    -- Р“Р»Р°РІРЅС‹Р№ С†РёРєР»
     local lastUpdateCheck = os.clock()
     while true do
         wait(0)
         
+        -- РџСЂРѕРІРµСЂРєР° РѕР±РЅРѕРІР»РµРЅРёР№ РєР°Р¶РґС‹Р№ С‡Р°СЃ
         if os.clock() - lastUpdateCheck > 3600 then
-            checkUpdatesWithSamp()
+            checkUpdates()
             lastUpdateCheck = os.clock()
         end
         
-        -- Остальная логика скрипта
-        -- ...
+        -- РџСЂРѕРІРµСЂРєР° РїСЂРѕРґР°Р¶ РєР°Р¶РґС‹Рµ 0.5 СЃРµРєСѓРЅРґС‹
+        local currentTime = os.clock()
+        if currentTime - saleCheckTimer > 0.5 then
+            saleCheckTimer = currentTime
+            
+            if totalSales > 0 and currentTime - lastSaleTime > 7 then
+                showSalesInfo()
+            end
+        end
+        
+        -- РџРѕРёСЃРє С‚РµРєСЃС‚РґСЂР°РІРѕРІ
+        local trigger, static, moving = findTextdraws()
+        
+        -- Р›РѕРіРёРєР° СЂС‹Р±Р°Р»РєРё
+        if trigger and not found.trigger_last_state then
+            pressShift()
+        end
+        found.trigger_last_state = trigger ~= nil
+        
+        if moving and static then
+            local y_move = select(2, sampTextdrawGetPos(moving))
+            local y_stat = select(2, sampTextdrawGetPos(static))
+            
+            if y_move and y_stat then
+                local diff = y_move - y_stat
+                local abs_diff = math.abs(diff)
+                
+                if alignment_stage == 0 and diff > precision then
+                    alignment_stage = 1
+                elseif alignment_stage > 0 and abs_diff <= precision then
+                    alignment_stage = 2
+                elseif alignment_stage > 0 and diff < -safe_margin then
+                    alignment_stage = 0
+                end
+                
+                local speed = alignment_stage == 2 and fine_speed or normal_speed
+                if alignment_stage > 0 and diff > -safe_margin then
+                    pressShift()
+                    wait(speed)
+                end
+            end
+        else
+            alignment_stage = 0
+        end
     end
 end
